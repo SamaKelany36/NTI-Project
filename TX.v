@@ -1,62 +1,100 @@
-module transmitter(
-    input wire [7:0] data_in,
-    input wire Tx_en,
-    input wire clk_50m,
-    input wire clken,
-    output reg Tx,
-    output wire Tx_busy
+module TX (
+    input  clk,
+    input  rst,
+    input  [7:0] data_in,
+    input  tx_en,
+    output done,
+    output busy,
+    output reg tx
 );
 
-    initial begin
-        Tx = 1'b1;
+    parameter COUNT_CYCLES = 100_000_000 / 9600;
+
+    localparam IDLE     = 3'd0;
+    localparam START    = 3'd1;
+    localparam DATA     = 3'd2;
+    localparam STOP     = 3'd3;
+    localparam CLEAN_UP = 3'd4;
+
+    reg [2:0]  CS = 0;
+    reg [15:0] r_Clock_Count = 0;
+    reg [2:0]  r_Bit_Index = 0;
+    reg [7:0]  r_Tx_Data = 0;
+    reg        r_Tx_Done = 0;
+    reg        r_Tx_busy = 0;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            CS <= IDLE;
+            r_Clock_Count <= 0;
+            r_Bit_Index <= 0;
+            r_Tx_Data <= 0;
+            r_Tx_Done <= 0;
+            r_Tx_busy <= 0;
+            tx <= 1'b1;
+        end else begin
+            case (CS)
+                IDLE: begin
+                    tx <= 1'b1;
+                    r_Clock_Count <= 0;
+                    r_Bit_Index <= 0;
+                    r_Tx_Done <= 0;
+                    if (tx_en) begin
+                        r_Tx_busy <= 1'b1;
+                        r_Tx_Data <= data_in;
+                        CS <= START;
+                    end else begin
+                        CS <= IDLE;
+                    end
+                end
+                START: begin
+                    tx <= 1'b0;
+                    if (r_Clock_Count < COUNT_CYCLES - 1) begin
+                        r_Clock_Count <= r_Clock_Count + 1;
+                        CS <= START;
+                    end else begin
+                        r_Clock_Count <= 0;
+                        CS <= DATA;
+                    end
+                end
+                DATA: begin
+                    tx <= r_Tx_Data[r_Bit_Index];
+                    if (r_Clock_Count < COUNT_CYCLES - 1) begin
+                        r_Clock_Count <= r_Clock_Count + 1;
+                        CS <= DATA;
+                    end else begin
+                        r_Clock_Count <= 0;
+                        if (r_Bit_Index < 7) begin
+                            r_Bit_Index <= r_Bit_Index + 1;
+                            CS <= DATA;
+                        end else begin
+                            r_Bit_Index <= 0;
+                            CS <= STOP;
+                        end
+                    end
+                end
+                STOP: begin
+                    tx <= 1'b1;
+                    r_Tx_Done <= 1'b1;
+                    if (r_Clock_Count < COUNT_CYCLES - 1) begin
+                        r_Clock_Count <= r_Clock_Count + 1;
+                        CS <= STOP;
+                    end else begin
+                        r_Tx_busy <= 1'b0;
+                        r_Clock_Count <= 0;
+                        CS <= CLEAN_UP;
+                    end
+                end
+                CLEAN_UP: begin
+                    CS <= IDLE;
+                    r_Tx_Done <= 0;
+                    r_Tx_busy <= 0;
+                end
+            endcase
+        end
     end
 
-    parameter TX_STATE_IDLE  = 2'b00;
-    parameter TX_STATE_START = 2'b01;
-    parameter TX_STATE_DATA  = 2'b10;
-    parameter TX_STATE_STOP  = 2'b11;
-
-    reg [7:0] data = 8'h00;
-    reg [2:0] bit_pos = 3'h0;
-    reg [1:0] state = TX_STATE_IDLE;
-
-    always @(posedge clk_50m) begin
-        case (state)
-            TX_STATE_IDLE: begin
-                if (Tx_en) begin
-                    data <= data_in;
-                    bit_pos <= 3'h0;
-                    state <= TX_STATE_START;
-                end
-            end
-            TX_STATE_START: begin
-                if (clken) begin
-                    Tx <= 1'b0;
-                    state <= TX_STATE_DATA;
-                end
-            end
-            TX_STATE_DATA: begin
-                if (clken) begin
-                    Tx <= data[bit_pos];
-                    if (bit_pos == 3'h7)
-                        state <= TX_STATE_STOP;
-                    else
-                        bit_pos <= bit_pos + 1;
-                end
-            end
-            TX_STATE_STOP: begin
-                if (clken) begin
-                    Tx <= 1'b1;
-                    state <= TX_STATE_IDLE;
-                end
-            end
-            default: begin
-                Tx <= 1'b1;
-                state <= TX_STATE_IDLE;
-            end
-        endcase
-    end
-
-    assign Tx_busy = (state != TX_STATE_IDLE);
+    assign busy = r_Tx_busy;
+    assign done = r_Tx_Done;
 
 endmodule
